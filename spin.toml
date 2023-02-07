@@ -1,0 +1,15 @@
+spin_version = "1"
+authors = ["Piotr Sarna <p.sarna@tlen.pl>"]
+description = ""
+name = "country-counter-spin"
+trigger = { type = "http", base = "/" }
+version = "0.1.0"
+
+[[component]]
+id = "country-counter-spin"
+source = "target/wasm32-wasi/release/country_counter_spin.wasm"
+allowed_http_hosts = ["https://spin-psarna.turso.io"]
+[component.trigger]
+route = "/..."
+[component.build]
+command = "cargo build --target wasm32-wasi --release"
