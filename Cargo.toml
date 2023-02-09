@@ -17,8 +17,9 @@ bytes = "1"
 http = "0.2"
 # The Spin SDK.
 spin-sdk = { git = "https://github.com/fermyon/spin", tag = "v0.8.0" }
-libsql-client = { git = "https://github.com/psarna/sqld", branch = "spin_evaluation", version = "0.4.0", features = ["spin_backend"] }
+libsql-client = { git = "https://github.com/psarna/sqld", branch = "spin", version = "0.4.911", features = ["spin_backend"] }
 # Crate that generates Rust Wasm bindings from a WebAssembly interface.
 wit-bindgen-rust = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "cb871cfa1ee460b51eb1d144b175b9aab9c50aba" }
+rand = "0.8.5"
 
 [workspace]

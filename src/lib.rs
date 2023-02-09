@@ -4,16 +4,18 @@ use spin_sdk::{
     http_component,
 };
 
-use libsql_client::{spin::Connection, CellValue, QueryResult, Statement};
+use libsql_client::{Connection, QueryResult, Statement, Value};
+use rand::seq::SliceRandom;
+use std::task::Poll;
 
 // Take a query result and render it into a HTML table
 fn result_to_html_table(result: QueryResult) -> String {
     let mut html = "<table style=\"border: 1px solid\">".to_string();
     match result {
-        QueryResult::Error((msg, _)) => return format!("Error: {}", msg),
+        QueryResult::Error((msg, _)) => return format!("Error: {msg}"),
         QueryResult::Success((result, _)) => {
             for column in &result.columns {
-                html += &format!("<th style=\"border: 1px solid\">{}</th>", column);
+                html += &format!("<th style=\"border: 1px solid\">{column}</th>");
             }
             for row in result.rows {
                 html += "<tr style=\"border: 1px solid\">";
@@ -58,7 +60,7 @@ fn create_map_canvas(result: QueryResult) -> String {
       let point;"#.to_owned();
 
     match result {
-        QueryResult::Error((msg, _)) => return format!("Error: {}", msg),
+        QueryResult::Error((msg, _)) => return format!("Error: {msg}"),
         QueryResult::Success((result, _)) => {
             for row in result.rows {
                 canvas += &format!(
@@ -72,21 +74,45 @@ fn create_map_canvas(result: QueryResult) -> String {
     canvas
 }
 
+// Helper function to be able to poll async functions in sync code
+fn dummy_waker() -> std::task::Waker {
+    const VTABLE: std::task::RawWakerVTable = std::task::RawWakerVTable::new(
+        |data: *const ()| std::task::RawWaker::new(data, &VTABLE),
+        |_data: *const ()| (),
+        |_data: *const ()| (),
+        |_data: *const ()| (),
+    );
+    const RAW: std::task::RawWaker = std::task::RawWaker::new(
+        (&VTABLE as *const std::task::RawWakerVTable).cast(),
+        &VTABLE,
+    );
+    unsafe { std::task::Waker::from_raw(RAW) }
+}
+
 // Serve a request to load the page
-fn serve(db: Connection) -> String {
+fn serve(db: impl Connection) -> String {
+    let waker = dummy_waker();
+    let mut ctx = std::task::Context::from_waker(&waker);
+
     // Recreate the tables if they do not exist yet
     db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
-    .ok();
+    .as_mut().poll(&mut ctx).is_ready();
     db.execute(
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
-    )
-    .ok();
+    ).as_mut().poll(&mut ctx).is_ready();
 
-    // Fake data
-    let airport = "madeupfortesting";
-    let country = "MadeUpForTesting";
-    let city = "MadeUpForTesting";
-    let coordinates = (0., 0.);
+    // For demo purposes, let's pick a pseudorandom location
+    const FAKE_LOCATIONS: &[(&str, &str, &str, f64, f64)] = &[
+        ("WAW", "PL", "Warsaw", 52.22959, 21.0067),
+        ("EWR", "US", "Newark", 42.99259, -81.3321),
+        ("HAM", "DE", "Hamburg", 50.118801, 7.684300),
+        ("HEL", "FI", "Helsinki", 60.3183, 24.9497),
+        ("NSW", "AU", "Sydney", -33.9500, 151.1819),
+    ];
+
+    let (airport, country, city, latitude, longitude) =
+        *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
+
     db.transaction([
         Statement::with_params("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
         Statement::with_params(
@@ -96,26 +122,34 @@ fn serve(db: Connection) -> String {
         Statement::with_params(
             "INSERT INTO coordinates VALUES (?, ?, ?)",
             &[
-                CellValue::Float(coordinates.0 as f64),
-                CellValue::Float(coordinates.1 as f64),
+                Value::Float(latitude),
+                Value::Float(longitude),
                 airport.into(),
             ],
         ),
     ])
-    .ok();
+    .as_mut()
+    .poll(&mut ctx)
+    .is_ready();
 
-    let counter_response = match db.execute("SELECT * FROM counter") {
-        Ok(resp) => resp,
-        Err(e) => return format!("Error: {e}"),
+    let counter_response = match db.execute("SELECT * FROM counter").as_mut().poll(&mut ctx) {
+        Poll::Ready(Ok(resp)) => resp,
+        Poll::Ready(Err(e)) => return format!("Error: {e}"),
+        Poll::Pending => return "Unexpected incomplete async event".into(),
     };
     let scoreboard = result_to_html_table(counter_response);
 
-    let coords = match db.execute("SELECT airport, lat, long FROM coordinates") {
-        Ok(coords) => coords,
-        Err(e) => return format!("Error: {e}"),
+    let coords = match db
+        .execute("SELECT airport, lat, long FROM coordinates")
+        .as_mut()
+        .poll(&mut ctx)
+    {
+        Poll::Ready(Ok(coords)) => coords,
+        Poll::Ready(Err(e)) => return format!("Error: {e}"),
+        Poll::Pending => return "Unexpected incomplete async event".into(),
     };
     let canvas = create_map_canvas(coords);
-    let html = format!("{} Scoreboard: <br /> {}", canvas, scoreboard);
+    let html = format!("{canvas} Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
     html
 }
 
@@ -124,7 +158,11 @@ fn serve(db: Connection) -> String {
 fn handle_country_counter_spin(req: Request) -> Result<Response> {
     println!("{:?}", req.headers());
 
-    let db = Connection::connect("https://spin-psarna.turso.io", "psarna", "48EkN63vyf105ut2");
+    let db = libsql_client::spin::Connection::connect(
+        "https://spin-psarna.turso.io",
+        "psarna",
+        "48EkN63vyf105ut2",
+    );
 
     let html = serve(db);
 
