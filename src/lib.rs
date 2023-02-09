@@ -149,7 +149,7 @@ fn serve(db: impl Connection) -> String {
         Poll::Pending => return "Unexpected incomplete async event".into(),
     };
     let canvas = create_map_canvas(coords);
-    let html = format!("{canvas} Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
+    let html = format!("{canvas} Database powered by <a href=\"https://chiselstrike.com/\">Turso</a>. <br /> Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
     html
 }
 
