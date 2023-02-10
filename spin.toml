@@ -10,6 +10,6 @@ id = "country-counter-spin"
 source = "target/wasm32-wasi/release/country_counter_spin.wasm"
 allowed_http_hosts = ["https://spin-psarna.turso.io"]
 [component.trigger]
-route = "/..."
+route = "/"
 [component.build]
 command = "cargo build --target wasm32-wasi --release"

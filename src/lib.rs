@@ -156,6 +156,7 @@ fn serve(db: impl Connection) -> String {
 /// A simple Spin HTTP component.
 #[http_component]
 fn handle_country_counter_spin(req: Request) -> Result<Response> {
+    println!("{:?}", req.uri());
     println!("{:?}", req.headers());
 
     let db = libsql_client::spin::Connection::connect(
