@@ -1,4 +1,5 @@
 use anyhow::Result;
+use rand::prelude::SliceRandom;
 use spin_sdk::{
     http::{Request, Response},
     http_component,
@@ -93,27 +94,17 @@ fn serve(db: impl Connection) -> Result<String> {
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     ).as_mut().poll(&mut ctx).is_ready();
 
-    // Let's fetch our estimated location from another service:
-    const LOCATE_URL: &str = "http://country-counter.p-sarna.workers.dev/locate";
-    let req = http::Request::builder()
-        .uri(LOCATE_URL)
-        .method("GET")
-        .body(None)?;
-    let response = spin_sdk::outbound_http::send_request(req);
-    let body = &response?.into_body().unwrap_or_default();
-    let mut raw_location = std::str::from_utf8(body)?.split(';');
+    // For demo purposes, let's pick a pseudorandom location
+    const FAKE_LOCATIONS: &[(&str, &str, &str, f64, f64)] = &[
+        ("WAW", "PL", "Warsaw", 52.22959, 21.0067),
+        ("EWR", "US", "Newark", 42.99259, -81.3321),
+        ("HAM", "DE", "Hamburg", 50.118801, 7.684300),
+        ("HEL", "FI", "Helsinki", 60.3183, 24.9497),
+        ("NSW", "AU", "Sydney", -33.9500, 151.1819),
+    ];
 
-    let airport = raw_location.next().unwrap_or("[unknown]");
-    let country = raw_location.next().unwrap_or("[unknown]");
-    let city = raw_location.next().unwrap_or("[unknown]");
-    let latitude = raw_location
-        .next()
-        .map(|s| s.parse::<f32>().unwrap_or(0.))
-        .unwrap_or(0.);
-    let longitude = raw_location
-        .next()
-        .map(|s| s.parse::<f32>().unwrap_or(0.))
-        .unwrap_or(0.);
+    let (airport, country, city, latitude, longitude) =
+        *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
 
     db.transaction([
         Statement::with_params("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
