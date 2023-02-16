@@ -8,7 +8,7 @@ version = "0.1.0"
 [[component]]
 id = "country-counter-spin"
 source = "target/wasm32-wasi/release/country_counter_spin.wasm"
-allowed_http_hosts = ["https://spin-psarna.turso.io"]
+allowed_http_hosts = ["https://spin-psarna.turso.io", "http://country-counter.p-sarna.workers.dev"]
 [component.trigger]
 route = "/"
 [component.build]

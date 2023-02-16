@@ -4,34 +4,29 @@ use spin_sdk::{
     http_component,
 };
 
-use libsql_client::{Connection, QueryResult, Statement, Value};
-use rand::seq::SliceRandom;
+use libsql_client::{params, Connection, QueryResult, ResultSet, Statement};
 use std::task::Poll;
 
 // Take a query result and render it into a HTML table
-fn result_to_html_table(result: QueryResult) -> String {
+fn result_to_html_table(result: QueryResult) -> Result<String> {
     let mut html = "<table style=\"border: 1px solid\">".to_string();
-    match result {
-        QueryResult::Error((msg, _)) => return format!("Error: {msg}"),
-        QueryResult::Success((result, _)) => {
-            for column in &result.columns {
-                html += &format!("<th style=\"border: 1px solid\">{column}</th>");
-            }
-            for row in result.rows {
-                html += "<tr style=\"border: 1px solid\">";
-                for column in &result.columns {
-                    html += &format!("<td>{}</td>", row.cells[column]);
-                }
-                html += "</tr>";
-            }
+    let ResultSet { columns, rows } = result.into_result_set()?;
+    for column in &columns {
+        html += &format!("<th style=\"border: 1px solid\">{column}</th>");
+    }
+    for row in rows {
+        html += "<tr style=\"border: 1px solid\">";
+        for column in &columns {
+            html += &format!("<td>{}</td>", row.cells[column]);
         }
-    };
+        html += "</tr>";
+    }
     html += "</table>";
-    html
+    Ok(html)
 }
 
 // Create a javascript canvas which loads a map of visited airports
-fn create_map_canvas(result: QueryResult) -> String {
+fn create_map_canvas(result: QueryResult) -> Result<String> {
     let mut canvas = r#"
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.5.16/p5.min.js" type="text/javascript"></script>
   <script src="https://unpkg.com/mappa-mundi/dist/mappa.js" type="text/javascript"></script>
@@ -59,19 +54,16 @@ fn create_map_canvas(result: QueryResult) -> String {
       clear();
       let point;"#.to_owned();
 
-    match result {
-        QueryResult::Error((msg, _)) => return format!("Error: {msg}"),
-        QueryResult::Success((result, _)) => {
-            for row in result.rows {
-                canvas += &format!(
-                    "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
-                    row.cells["lat"], row.cells["long"], row.cells["airport"]
-                );
-            }
-        }
-    };
+    let ResultSet { columns: _, rows } = result.into_result_set()?;
+    for row in rows {
+        canvas += &format!(
+            "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
+            row.cells["lat"], row.cells["long"], row.cells["airport"]
+        );
+    }
+
     canvas += "}</script>";
-    canvas
+    Ok(canvas)
 }
 
 // Helper function to be able to poll async functions in sync code
@@ -90,7 +82,7 @@ fn dummy_waker() -> std::task::Waker {
 }
 
 // Serve a request to load the page
-fn serve(db: impl Connection) -> String {
+fn serve(db: impl Connection) -> Result<String> {
     let waker = dummy_waker();
     let mut ctx = std::task::Context::from_waker(&waker);
 
@@ -101,17 +93,27 @@ fn serve(db: impl Connection) -> String {
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     ).as_mut().poll(&mut ctx).is_ready();
 
-    // For demo purposes, let's pick a pseudorandom location
-    const FAKE_LOCATIONS: &[(&str, &str, &str, f64, f64)] = &[
-        ("WAW", "PL", "Warsaw", 52.22959, 21.0067),
-        ("EWR", "US", "Newark", 42.99259, -81.3321),
-        ("HAM", "DE", "Hamburg", 50.118801, 7.684300),
-        ("HEL", "FI", "Helsinki", 60.3183, 24.9497),
-        ("NSW", "AU", "Sydney", -33.9500, 151.1819),
-    ];
+    // Let's fetch our estimated location from another service:
+    const LOCATE_URL: &str = "http://country-counter.p-sarna.workers.dev/locate";
+    let req = http::Request::builder()
+        .uri(LOCATE_URL)
+        .method("GET")
+        .body(None)?;
+    let response = spin_sdk::outbound_http::send_request(req);
+    let body = &response?.into_body().unwrap_or_default();
+    let mut raw_location = std::str::from_utf8(body)?.split(';');
 
-    let (airport, country, city, latitude, longitude) =
-        *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
+    let airport = raw_location.next().unwrap_or("[unknown]");
+    let country = raw_location.next().unwrap_or("[unknown]");
+    let city = raw_location.next().unwrap_or("[unknown]");
+    let latitude = raw_location
+        .next()
+        .map(|s| s.parse::<f32>().unwrap_or(0.))
+        .unwrap_or(0.);
+    let longitude = raw_location
+        .next()
+        .map(|s| s.parse::<f32>().unwrap_or(0.))
+        .unwrap_or(0.);
 
     db.transaction([
         Statement::with_params("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
@@ -121,11 +123,7 @@ fn serve(db: impl Connection) -> String {
         ),
         Statement::with_params(
             "INSERT INTO coordinates VALUES (?, ?, ?)",
-            &[
-                Value::Float(latitude),
-                Value::Float(longitude),
-                airport.into(),
-            ],
+            params!(latitude, longitude, airport),
         ),
     ])
     .as_mut()
@@ -134,10 +132,10 @@ fn serve(db: impl Connection) -> String {
 
     let counter_response = match db.execute("SELECT * FROM counter").as_mut().poll(&mut ctx) {
         Poll::Ready(Ok(resp)) => resp,
-        Poll::Ready(Err(e)) => return format!("Error: {e}"),
-        Poll::Pending => return "Unexpected incomplete async event".into(),
+        Poll::Ready(Err(e)) => anyhow::bail!("Error: {e}"),
+        Poll::Pending => anyhow::bail!("Unexpected incomplete async event"),
     };
-    let scoreboard = result_to_html_table(counter_response);
+    let scoreboard = result_to_html_table(counter_response)?;
 
     let coords = match db
         .execute("SELECT airport, lat, long FROM coordinates")
@@ -145,12 +143,12 @@ fn serve(db: impl Connection) -> String {
         .poll(&mut ctx)
     {
         Poll::Ready(Ok(coords)) => coords,
-        Poll::Ready(Err(e)) => return format!("Error: {e}"),
-        Poll::Pending => return "Unexpected incomplete async event".into(),
+        Poll::Ready(Err(e)) => anyhow::bail!("Error: {e}"),
+        Poll::Pending => anyhow::bail!("Unexpected incomplete async event"),
     };
-    let canvas = create_map_canvas(coords);
+    let canvas = create_map_canvas(coords)?;
     let html = format!("{canvas} Database powered by <a href=\"https://chiselstrike.com/\">Turso</a>. <br /> Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
-    html
+    Ok(html)
 }
 
 /// A simple Spin HTTP component.
@@ -165,7 +163,10 @@ fn handle_country_counter_spin(req: Request) -> Result<Response> {
         "48EkN63vyf105ut2",
     );
 
-    let html = serve(db);
+    let html = match serve(db) {
+        Ok(html) => html,
+        Err(e) => format!("{e}"),
+    };
 
     Ok(http::Response::builder()
         .status(200)
