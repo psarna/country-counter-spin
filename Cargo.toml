@@ -23,5 +23,6 @@ libsql-client = { git = "https://github.com/psarna/sqld", branch = "spin", versi
 # Crate that generates Rust Wasm bindings from a WebAssembly interface.
 wit-bindgen-rust = { git = "https://github.com/bytecodealliance/wit-bindgen", rev = "cb871cfa1ee460b51eb1d144b175b9aab9c50aba" }
 rand = "0.8.5"
+serde_json = "1.0.93"
 
 [workspace]

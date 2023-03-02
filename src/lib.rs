@@ -1,5 +1,4 @@
 use anyhow::Result;
-use rand::prelude::SliceRandom;
 use spin_sdk::{
     http::{Request, Response},
     http_component,
@@ -94,17 +93,22 @@ fn serve(db: impl Connection) -> Result<String> {
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     ).as_mut().poll(&mut ctx).is_ready();
 
-    // For demo purposes, let's pick a pseudorandom location
-    const FAKE_LOCATIONS: &[(&str, &str, &str, f64, f64)] = &[
-        ("WAW", "PL", "Warsaw", 52.22959, 21.0067),
-        ("EWR", "US", "Newark", 42.99259, -81.3321),
-        ("HAM", "DE", "Hamburg", 50.118801, 7.684300),
-        ("HEL", "FI", "Helsinki", 60.3183, 24.9497),
-        ("NSW", "AU", "Sydney", -33.9500, 151.1819),
-    ];
+    let req = http::Request::builder().uri("http://www.geoplugin.net/json.gp");
+    let geo = spin_sdk::outbound_http::send_request(req.body(None)?)?;
+    let geo = geo.into_body().expect("Received empty geolocation data");
+    let geo: serde_json::Value = serde_json::from_str(std::str::from_utf8(&geo)?)?;
 
-    let (airport, country, city, latitude, longitude) =
-        *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
+    let airport = geo["geoplugin_city"].as_str().unwrap_or_default();
+    let country = geo["geoplugin_countryName"].as_str().unwrap_or_default();
+    let city = geo["geoplugin_city"].as_str().unwrap_or_default();
+    let latitude = geo["geoplugin_latitude"]
+        .as_str()
+        .unwrap_or_default()
+        .parse::<f64>()?;
+    let longitude = geo["geoplugin_longitude"]
+        .as_str()
+        .unwrap_or_default()
+        .parse::<f64>()?;
 
     db.transaction([
         Statement::with_params("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
@@ -151,7 +155,7 @@ fn handle_country_counter_spin(req: Request) -> Result<Response> {
     let db = libsql_client::spin::Connection::connect(
         "https://spin-psarna.turso.io",
         "psarna",
-        "48EkN63vyf105ut2",
+        "9J41z0x85j7Qbvn2",
     );
 
     let html = match serve(db) {
