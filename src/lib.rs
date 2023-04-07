@@ -4,20 +4,20 @@ use spin_sdk::{
     http_component,
 };
 
-use libsql_client::{params, Connection, QueryResult, ResultSet, Statement};
+use libsql_client::{args, DatabaseClient, ResultSet, Statement};
+use rand::prelude::SliceRandom;
 use std::task::Poll;
 
 // Take a query result and render it into a HTML table
-fn result_to_html_table(result: QueryResult) -> Result<String> {
+fn result_to_html_table(result_set: ResultSet) -> Result<String> {
     let mut html = "<table style=\"border: 1px solid\">".to_string();
-    let ResultSet { columns, rows } = result.into_result_set()?;
-    for column in &columns {
+    for column in &result_set.columns {
         html += &format!("<th style=\"border: 1px solid\">{column}</th>");
     }
-    for row in rows {
+    for row in result_set.rows {
         html += "<tr style=\"border: 1px solid\">";
-        for column in &columns {
-            html += &format!("<td>{}</td>", row.cells[column]);
+        for value in row.values {
+            html += &format!("<td>{value}</td>");
         }
         html += "</tr>";
     }
@@ -26,7 +26,7 @@ fn result_to_html_table(result: QueryResult) -> Result<String> {
 }
 
 // Create a javascript canvas which loads a map of visited airports
-fn create_map_canvas(result: QueryResult) -> Result<String> {
+fn create_map_canvas(result_set: ResultSet) -> Result<String> {
     let mut canvas = r#"
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.5.16/p5.min.js" type="text/javascript"></script>
   <script src="https://unpkg.com/mappa-mundi/dist/mappa.js" type="text/javascript"></script>
@@ -54,11 +54,10 @@ fn create_map_canvas(result: QueryResult) -> Result<String> {
       clear();
       let point;"#.to_owned();
 
-    let ResultSet { columns: _, rows } = result.into_result_set()?;
-    for row in rows {
+    for row in result_set.rows {
         canvas += &format!(
-            "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
-            row.cells["lat"], row.cells["long"], row.cells["airport"]
+            "point = myMap.latLngToPixel({}, {});\nellipse(value_map.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
+            row.value_map["lat"], row.value_map["long"], row.value_map["airport"]
         );
     }
 
@@ -82,7 +81,7 @@ fn dummy_waker() -> std::task::Waker {
 }
 
 // Serve a request to load the page
-fn serve(db: impl Connection) -> Result<String> {
+fn serve(db: impl DatabaseClient) -> Result<String> {
     let waker = dummy_waker();
     let mut ctx = std::task::Context::from_waker(&waker);
 
@@ -93,6 +92,7 @@ fn serve(db: impl Connection) -> Result<String> {
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     ).as_mut().poll(&mut ctx).is_ready();
 
+    /* FIXME: replace with geolocation API once we have access to sender IP
     let req = http::Request::builder().uri("http://www.geoplugin.net/json.gp");
     let geo = spin_sdk::outbound_http::send_request(req.body(None)?)?;
     let geo = geo.into_body().expect("Received empty geolocation data");
@@ -109,16 +109,28 @@ fn serve(db: impl Connection) -> Result<String> {
         .as_str()
         .unwrap_or_default()
         .parse::<f64>()?;
+    */
+    // For demo purposes, let's pick a pseudorandom location
+    const FAKE_LOCATIONS: &[(&str, &str, &str, f64, f64)] = &[
+        ("WAW", "PL", "Warsaw", 52.22959, 21.0067),
+        ("EWR", "US", "Newark", 42.99259, -81.3321),
+        ("HAM", "DE", "Hamburg", 50.118801, 7.684300),
+        ("HEL", "FI", "Helsinki", 60.3183, 24.9497),
+        ("NSW", "AU", "Sydney", -33.9500, 151.1819),
+    ];
 
-    db.transaction([
-        Statement::with_params("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
-        Statement::with_params(
+    let (airport, country, city, latitude, longitude) =
+        *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
+
+    db.batch([
+        Statement::with_args("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
+        Statement::with_args(
             "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
             &[country, city],
         ),
-        Statement::with_params(
+        Statement::with_args(
             "INSERT INTO coordinates VALUES (?, ?, ?)",
-            params!(latitude, longitude, airport),
+            args!(latitude, longitude, airport),
         ),
     ])
     .as_mut()
@@ -151,12 +163,15 @@ fn serve(db: impl Connection) -> Result<String> {
 fn handle_country_counter_spin(req: Request) -> Result<Response> {
     println!("{:?}", req.uri());
     println!("{:?}", req.headers());
-
-    let db = libsql_client::spin::Connection::connect(
-        "https://spin-psarna.turso.io",
-        "psarna",
-        "9J41z0x85j7Qbvn2",
+    println!(
+        "{:?}",
+        req.extensions().get::<Option<std::net::SocketAddr>>()
     );
+
+    let db = libsql_client::spin::Client::from_url(
+        "https://psarna:H35VRkK9j14627Cy@spin-psarna.turso.io",
+    )
+    .unwrap();
 
     let html = match serve(db) {
         Ok(html) => html,
