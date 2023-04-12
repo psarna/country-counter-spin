@@ -4,9 +4,8 @@ use spin_sdk::{
     http_component,
 };
 
-use libsql_client::{args, DatabaseClient, ResultSet, Statement};
+use libsql_client::{args, spin::Client, ResultSet, Statement};
 use rand::prelude::SliceRandom;
-use std::task::Poll;
 
 // Take a query result and render it into a HTML table
 fn result_to_html_table(result_set: ResultSet) -> Result<String> {
@@ -65,32 +64,13 @@ fn create_map_canvas(result_set: ResultSet) -> Result<String> {
     Ok(canvas)
 }
 
-// Helper function to be able to poll async functions in sync code
-fn dummy_waker() -> std::task::Waker {
-    const VTABLE: std::task::RawWakerVTable = std::task::RawWakerVTable::new(
-        |data: *const ()| std::task::RawWaker::new(data, &VTABLE),
-        |_data: *const ()| (),
-        |_data: *const ()| (),
-        |_data: *const ()| (),
-    );
-    const RAW: std::task::RawWaker = std::task::RawWaker::new(
-        (&VTABLE as *const std::task::RawWakerVTable).cast(),
-        &VTABLE,
-    );
-    unsafe { std::task::Waker::from_raw(RAW) }
-}
-
 // Serve a request to load the page
-fn serve(db: impl DatabaseClient) -> Result<String> {
-    let waker = dummy_waker();
-    let mut ctx = std::task::Context::from_waker(&waker);
-
+fn serve(db: Client) -> Result<String> {
     // Recreate the tables if they do not exist yet
-    db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
-    .as_mut().poll(&mut ctx).is_ready();
+    db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")?;
     db.execute(
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
-    ).as_mut().poll(&mut ctx).is_ready();
+    )?;
 
     /* FIXME: replace with geolocation API once we have access to sender IP
     let req = http::Request::builder().uri("http://www.geoplugin.net/json.gp");
@@ -123,36 +103,21 @@ fn serve(db: impl DatabaseClient) -> Result<String> {
         *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
 
     db.batch([
-        Statement::with_args("INSERT INTO counter VALUES (?, ?, 0)", &[country, city]),
+        Statement::with_args("INSERT OR IGNORE INTO counter VALUES (?, ?, 0)", &[country, city]),
         Statement::with_args(
             "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
             &[country, city],
         ),
         Statement::with_args(
-            "INSERT INTO coordinates VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
             args!(latitude, longitude, airport),
         ),
-    ])
-    .as_mut()
-    .poll(&mut ctx)
-    .is_ready();
+    ])?;
 
-    let counter_response = match db.execute("SELECT * FROM counter").as_mut().poll(&mut ctx) {
-        Poll::Ready(Ok(resp)) => resp,
-        Poll::Ready(Err(e)) => anyhow::bail!("Error: {e}"),
-        Poll::Pending => anyhow::bail!("Unexpected incomplete async event"),
-    };
+    let counter_response = db.execute("SELECT * FROM counter")?;
     let scoreboard = result_to_html_table(counter_response)?;
 
-    let coords = match db
-        .execute("SELECT airport, lat, long FROM coordinates")
-        .as_mut()
-        .poll(&mut ctx)
-    {
-        Poll::Ready(Ok(coords)) => coords,
-        Poll::Ready(Err(e)) => anyhow::bail!("Error: {e}"),
-        Poll::Pending => anyhow::bail!("Unexpected incomplete async event"),
-    };
+    let coords = db.execute("SELECT airport, lat, long FROM coordinates")?;
     let canvas = create_map_canvas(coords)?;
     let html = format!("{canvas} Database powered by <a href=\"https://chiselstrike.com/\">Turso</a>. <br /> Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
     Ok(html)
