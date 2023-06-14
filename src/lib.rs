@@ -5,7 +5,6 @@ use spin_sdk::{
 };
 
 use libsql_client::{args, spin::Client, ResultSet, Statement};
-use rand::prelude::SliceRandom;
 
 // Take a query result and render it into a HTML table
 fn result_to_html_table(result_set: ResultSet) -> Result<String> {
@@ -16,7 +15,12 @@ fn result_to_html_table(result_set: ResultSet) -> Result<String> {
     for row in result_set.rows {
         html += "<tr style=\"border: 1px solid\">";
         for value in row.values {
-            html += &format!("<td>{value}</td>");
+            match value {
+                libsql_client::Value::Text { value } => html += &format!("<td>{value}</td>"),
+                libsql_client::Value::Integer { value } => html += &format!("<td>{value}</td>"),
+                libsql_client::Value::Null => html += "<td>(null)</td>",
+                _ => html += "<td>(unexpected value type!)</td>",
+            }
         }
         html += "</tr>";
     }
@@ -41,6 +45,7 @@ fn create_map_canvas(result_set: ResultSet) -> Result<String> {
     }
     function setup(){
       canvas = createCanvas(640,480);
+      canvas.parent('map');
       myMap = mappa.tileMap(options); 
       myMap.overlay(canvas) 
     
@@ -54,8 +59,12 @@ fn create_map_canvas(result_set: ResultSet) -> Result<String> {
       let point;"#.to_owned();
 
     for row in result_set.rows {
+        println!(
+            "{} {} {}",
+            row.value_map["lat"], row.value_map["long"], row.value_map["airport"]
+        );
         canvas += &format!(
-            "point = myMap.latLngToPixel({}, {});\nellipse(value_map.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
+            "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
             row.value_map["lat"], row.value_map["long"], row.value_map["airport"]
         );
     }
@@ -65,45 +74,31 @@ fn create_map_canvas(result_set: ResultSet) -> Result<String> {
 }
 
 // Serve a request to load the page
-fn serve(db: Client) -> Result<String> {
+fn serve(db: Client, client_addr: &str) -> Result<String> {
     // Recreate the tables if they do not exist yet
     db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")?;
     db.execute(
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     )?;
 
-    /* FIXME: replace with geolocation API once we have access to sender IP
-    let req = http::Request::builder().uri("http://www.geoplugin.net/json.gp");
+    let req = http::Request::builder().uri(format!(
+        "http://ip-api.com/json/{client_addr}?fields=country,city,lat,lon"
+    ));
     let geo = spin_sdk::outbound_http::send_request(req.body(None)?)?;
     let geo = geo.into_body().expect("Received empty geolocation data");
     let geo: serde_json::Value = serde_json::from_str(std::str::from_utf8(&geo)?)?;
 
-    let airport = geo["geoplugin_city"].as_str().unwrap_or_default();
-    let country = geo["geoplugin_countryName"].as_str().unwrap_or_default();
-    let city = geo["geoplugin_city"].as_str().unwrap_or_default();
-    let latitude = geo["geoplugin_latitude"]
-        .as_str()
-        .unwrap_or_default()
-        .parse::<f64>()?;
-    let longitude = geo["geoplugin_longitude"]
-        .as_str()
-        .unwrap_or_default()
-        .parse::<f64>()?;
-    */
-    // For demo purposes, let's pick a pseudorandom location
-    const FAKE_LOCATIONS: &[(&str, &str, &str, f64, f64)] = &[
-        ("WAW", "PL", "Warsaw", 52.22959, 21.0067),
-        ("EWR", "US", "Newark", 42.99259, -81.3321),
-        ("HAM", "DE", "Hamburg", 50.118801, 7.684300),
-        ("HEL", "FI", "Helsinki", 60.3183, 24.9497),
-        ("NSW", "AU", "Sydney", -33.9500, 151.1819),
-    ];
-
-    let (airport, country, city, latitude, longitude) =
-        *FAKE_LOCATIONS.choose(&mut rand::thread_rng()).unwrap();
+    let city = geo["city"].as_str().unwrap_or("Secret Turso HQ");
+    let country = geo["country"].as_str().unwrap_or("[undisclosed]");
+    let airport = city;
+    let latitude = geo["lat"].as_f64().unwrap_or_default();
+    let longitude = geo["lon"].as_f64().unwrap_or_default();
 
     db.batch([
-        Statement::with_args("INSERT OR IGNORE INTO counter VALUES (?, ?, 0)", &[country, city]),
+        Statement::with_args(
+            "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
+            &[country, city],
+        ),
         Statement::with_args(
             "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
             &[country, city],
@@ -119,7 +114,18 @@ fn serve(db: Client) -> Result<String> {
 
     let coords = db.execute("SELECT airport, lat, long FROM coordinates")?;
     let canvas = create_map_canvas(coords)?;
-    let html = format!("{canvas} Database powered by <a href=\"https://chiselstrike.com/\">Turso</a>. <br /> Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
+    let html = format!(
+        r#"
+        <h1>Spin + Turso demo</h1>
+        <h3>Each request bumps a counter at detected location</h3>
+        {canvas}
+        <div style="display:flex">
+            <div style="margin-right: 5px"> <h2>Scoreboard:<h2> {scoreboard}</div>
+            <div id="map"></div>
+        </div>
+        <p>Database powered by <a href=\"https://chiselstrike.com/\">Turso</a><p>
+        <footer>Map data from OpenStreetMap (https://tile.osm.org/)<br />geolocation from http://ip-api.com</footer>"#
+    );
     Ok(html)
 }
 
@@ -133,12 +139,25 @@ fn handle_country_counter_spin(req: Request) -> Result<Response> {
         req.extensions().get::<Option<std::net::SocketAddr>>()
     );
 
+    let client_addr = req
+        .headers()
+        .get("spin-client-addr")
+        .map(|v| {
+            let addr = v.to_str().unwrap();
+            match addr.find(':') {
+                Some(i) => &addr[..i],
+                None => addr,
+            }
+            .to_string()
+        })
+        .unwrap_or_else(|| String::from("127.0.0.1"));
+
     let db = libsql_client::spin::Client::from_url(
         "https://psarna:H35VRkK9j14627Cy@spin-psarna.turso.io",
     )
     .unwrap();
 
-    let html = match serve(db) {
+    let html = match serve(db, &client_addr) {
         Ok(html) => html,
         Err(e) => format!("{e}"),
     };
