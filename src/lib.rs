@@ -4,7 +4,7 @@ use spin_sdk::{
     http_component,
 };
 
-use libsql_client::{args, spin::Client, ResultSet, Statement};
+use libsql_client::{args, Client, Config, ResultSet, Statement};
 
 // Take a query result and render it into a HTML table
 fn result_to_html_table(result_set: ResultSet) -> Result<String> {
@@ -76,8 +76,8 @@ fn create_map_canvas(result_set: ResultSet) -> Result<String> {
 // Serve a request to load the page
 fn serve(db: Client, client_addr: &str) -> Result<String> {
     // Recreate the tables if they do not exist yet
-    db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")?;
-    db.execute(
+    db.execute_sync("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")?;
+    db.execute_sync(
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     )?;
 
@@ -94,7 +94,7 @@ fn serve(db: Client, client_addr: &str) -> Result<String> {
     let latitude = geo["lat"].as_f64().unwrap_or_default();
     let longitude = geo["lon"].as_f64().unwrap_or_default();
 
-    db.batch([
+    db.batch_sync([
         Statement::with_args(
             "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
             &[country, city],
@@ -109,10 +109,10 @@ fn serve(db: Client, client_addr: &str) -> Result<String> {
         ),
     ])?;
 
-    let counter_response = db.execute("SELECT * FROM counter")?;
+    let counter_response = db.execute_sync("SELECT * FROM counter")?;
     let scoreboard = result_to_html_table(counter_response)?;
 
-    let coords = db.execute("SELECT airport, lat, long FROM coordinates")?;
+    let coords = db.execute_sync("SELECT airport, lat, long FROM coordinates")?;
     let canvas = create_map_canvas(coords)?;
     let html = format!(
         r#"
@@ -152,9 +152,10 @@ fn handle_country_counter_spin(req: Request) -> Result<Response> {
         })
         .unwrap_or_else(|| String::from("127.0.0.1"));
 
-    let db = libsql_client::spin::Client::from_url(
-        "https://psarna:H35VRkK9j14627Cy@spin-psarna.turso.io",
-    )
+    let db = libsql_client::Client::from_config_sync(Config {
+        url: url::Url::parse("https://spin-psarna.turso.io").unwrap(),
+        auth_token: Some("eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE2ODc1MDU1ODgsImlkIjoiNzIyY2IyYTEtY2M3MC0xMWVkLWFkM2MtOGVhNWEwNjcyYmM2In0.J6PLjPYqD55y4K-xEqK3btLXPCtBUfahjlmbweneSfqdKwnP6bqhCJGU2iZpL19veEnvY7uI9Kk_wzLLqZm1Bg".to_string())
+    })
     .unwrap();
 
     let html = match serve(db, &client_addr) {
