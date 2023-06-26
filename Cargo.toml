@@ -17,8 +17,8 @@ bytes = "1"
 http = "0.2"
 # The Spin SDK.
 spin-sdk = { git = "https://github.com/fermyon/spin", tag = "v1.3.0" }
-#dev: libsql-client = { path = "../libsql-client-rs", default-features = false, features  = ["spin_backend", "mapping_names_to_values_in_rows"] }
-libsql-client = { git = "https://github.com/libsql/libsql-client-rs", version = "0.30", default-features = false, features = [
+#libsql-client = { path = "../libsql-client-rs", default-features = false, features  = ["spin_backend", "mapping_names_to_values_in_rows"] }
+libsql-client = { git = "https://github.com/libsql/libsql-client-rs", version = "0.31", default-features = false, features = [
     "spin_backend",
     "mapping_names_to_values_in_rows"
 ]}
