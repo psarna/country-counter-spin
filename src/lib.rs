@@ -1,5 +1,6 @@
 use anyhow::Result;
 use spin_sdk::{
+    config,
     http::{Request, Response},
     http_component,
 };
@@ -123,7 +124,7 @@ fn serve(db: SyncClient, client_addr: &str) -> Result<String> {
             <div style="margin-right: 5px"> <h2>Scoreboard:<h2> {scoreboard}</div>
             <div id="map"></div>
         </div>
-        <p>Database powered by <a href=\"https://chiselstrike.com/\">Turso</a><p>
+        <p>Database powered by <a href=\"https://turso.tech/\">Turso</a><p>
         <footer>Map data from OpenStreetMap (https://tile.osm.org/)<br />geolocation from http://ip-api.com</footer>"#
     );
     Ok(html)
@@ -152,11 +153,10 @@ fn handle_country_counter_spin(req: Request) -> Result<Response> {
         })
         .unwrap_or_else(|| String::from("127.0.0.1"));
 
-    let db = SyncClient::from_config(Config {
-        url: url::Url::parse("https://spin-psarna.turso.io").unwrap(),
-        auth_token: Some("eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE2ODc1MDU1ODgsImlkIjoiNzIyY2IyYTEtY2M3MC0xMWVkLWFkM2MtOGVhNWEwNjcyYmM2In0.J6PLjPYqD55y4K-xEqK3btLXPCtBUfahjlmbweneSfqdKwnP6bqhCJGU2iZpL19veEnvY7uI9Kk_wzLLqZm1Bg".to_string())
-    })
-    .unwrap();
+    let url = config::get("turso_url")?;
+    let auth_token = config::get("turso_auth_token")?;
+    let db =
+        SyncClient::from_config(Config::new(url.as_str())?.with_auth_token(auth_token)).unwrap();
 
     let html = match serve(db, &client_addr) {
         Ok(html) => html,

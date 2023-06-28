@@ -1,15 +1,24 @@
-spin_version = "1"
+spin_manifest_version = "1"
 authors = ["Piotr Sarna <p.sarna@tlen.pl>"]
 description = ""
 name = "country-counter-spin"
 trigger = { type = "http", base = "/" }
 version = "0.1.0"
 
+[variables]
+turso_url = { default = "libsql://spin-psarna.turso.io" }
+turso_auth_token = { required = true, secret = true }
+
 [[component]]
 id = "country-counter-spin"
 source = "target/wasm32-wasi/release/country_counter_spin.wasm"
-allowed_http_hosts = ["https://spin-psarna.turso.io", "http://ip-api.com"]
+allowed_http_hosts = ["spin-psarna.turso.io", "ip-api.com"]
+key_value_stores = ["default"]
 [component.trigger]
 route = "/"
 [component.build]
 command = "cargo build --target wasm32-wasi --release"
+
+[component.config]
+turso_url = "{{ turso_url }}"
+turso_auth_token = "{{ turso_auth_token }}"
